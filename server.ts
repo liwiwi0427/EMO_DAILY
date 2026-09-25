@@ -1,5 +1,4 @@
 import express from 'express';
-import { createServer as createViteServer } from 'vite';
 import fs from 'fs';
 import path from 'path';
 
@@ -8,11 +7,19 @@ const PORT = Number(process.env.PORT) || 3000;
 
 app.use(express.json({ limit: '50mb' }));
 
-// Cloud backup storage directory
-const DATA_DIR = path.resolve(process.cwd(), 'data');
-if (!fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
+// Cloud backup storage directory: support Vercel / Serverless read-only filesystem
+const DATA_DIR = process.env.VERCEL
+  ? path.join('/tmp', 'mindful_journal_data')
+  : path.resolve(process.cwd(), 'data');
+
+try {
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+  }
+} catch (e) {
+  console.warn('Could not create data dir, using in-memory fallback:', e);
 }
+
 const BACKUPS_FILE = path.join(DATA_DIR, 'cloud_backups.json');
 
 interface BackupRecord {
@@ -26,6 +33,9 @@ interface BackupRecord {
   payload: any;
 }
 
+// In-memory fallback if disk is not writable
+let inMemoryBackups: BackupRecord[] = [];
+
 function readBackups(): BackupRecord[] {
   try {
     if (fs.existsSync(BACKUPS_FILE)) {
@@ -33,22 +43,31 @@ function readBackups(): BackupRecord[] {
       return JSON.parse(content);
     }
   } catch (e) {
-    console.error('Error reading backups file', e);
+    console.error('Error reading backups file, returning in-memory store:', e);
   }
-  return [];
+  return inMemoryBackups;
 }
 
 function writeBackups(data: BackupRecord[]) {
+  inMemoryBackups = data;
   try {
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
     fs.writeFileSync(BACKUPS_FILE, JSON.stringify(data, null, 2), 'utf-8');
   } catch (e) {
-    console.error('Error writing backups file', e);
+    console.error('Error writing backups file to disk, saved in-memory:', e);
   }
 }
 
 // API Routes
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', service: 'Mindful Journal Cloud Sync', timestamp: new Date().toISOString() });
+  res.json({
+    status: 'ok',
+    service: 'Mindful Journal Cloud Sync',
+    environment: process.env.VERCEL ? 'vercel' : 'node',
+    timestamp: new Date().toISOString()
+  });
 });
 
 // List backup history
@@ -139,10 +158,11 @@ app.delete('/api/backup/:id', (req, res) => {
   res.json({ success: true, message: '已成功移除此雲端備份' });
 });
 
-// Start dev Vite or static serving
+// Start dev Vite or static serving when running as a stand-alone server
 async function startServer() {
   const isProduction = process.env.NODE_ENV === 'production';
   if (!isProduction) {
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
@@ -161,6 +181,11 @@ async function startServer() {
   });
 }
 
-startServer().catch(err => {
-  console.error('Failed to start server:', err);
-});
+// Only launch standalone HTTP listener if not executed in Vercel Serverless Function
+if (!process.env.VERCEL && !process.env.AWS_LAMBDA_FUNCTION_NAME) {
+  startServer().catch(err => {
+    console.error('Failed to start server:', err);
+  });
+}
+
+export default app;

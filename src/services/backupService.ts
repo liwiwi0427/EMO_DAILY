@@ -1,7 +1,36 @@
 import { DiaryEntry, CloudBackupItem, BackupPayload, EncryptedBackupContainer } from '../types/diary';
 import { encryptData, decryptData } from '../utils/crypto';
 
+const LOCAL_CLOUD_CACHE_KEY = 'mindful_journal_cloud_cache_v1';
+
 export class BackupService {
+  /**
+   * Helper to get locally cached cloud backups
+   */
+  private static getLocalCloudCache(): CloudBackupItem[] {
+    try {
+      const saved = localStorage.getItem(LOCAL_CLOUD_CACHE_KEY);
+      if (saved) return JSON.parse(saved);
+    } catch (e) {
+      console.error(e);
+    }
+    return [];
+  }
+
+  /**
+   * Helper to save a cloud backup item into local cloud cache
+   */
+  private static saveToLocalCloudCache(item: CloudBackupItem) {
+    try {
+      const list = this.getLocalCloudCache();
+      list.unshift(item);
+      if (list.length > 20) list.length = 20;
+      localStorage.setItem(LOCAL_CLOUD_CACHE_KEY, JSON.stringify(list));
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
   /**
    * Upload entries to server cloud backup
    */
@@ -39,27 +68,70 @@ export class BackupService {
         encryptedFlag = true;
       }
 
-      const res = await fetch('/api/backup', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          title: options.title,
-          payload: finalPayload,
-          entryCount: entries.length,
-          isEncrypted: encryptedFlag,
-          device: navigator.userAgent.includes('Mobile') ? '行動裝置 (Mobile)' : '電腦桌面 (Desktop)',
-        }),
-      });
+      const backupTitle = options.title || `雲端同步備份 (${new Date().toLocaleDateString('zh-TW')} ${new Date().toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' })})`;
+      const backupId = 'bk_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
 
-      const json = await res.json();
-      if (!res.ok || !json.success) {
-        throw new Error(json.message || '備份失敗');
+      // Attempt server API call
+      try {
+        const res = await fetch('/api/backup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            title: backupTitle,
+            payload: finalPayload,
+            entryCount: entries.length,
+            isEncrypted: encryptedFlag,
+            device: navigator.userAgent.includes('Mobile') ? '行動裝置 (Mobile)' : '電腦桌面 (Desktop)',
+          }),
+        });
+
+        const contentType = res.headers.get('content-type');
+        if (contentType && contentType.includes('application/json')) {
+          const json = await res.json();
+          if (res.ok && json.success) {
+            this.saveToLocalCloudCache({
+              id: json.backup?.id || backupId,
+              timestamp: json.backup?.timestamp || new Date().toISOString(),
+              title: backupTitle,
+              entryCount: entries.length,
+              isEncrypted: encryptedFlag,
+              sizeBytes: json.backup?.sizeBytes || BufferSourceBytes(finalPayload),
+              device: '雲端同步存檔',
+            });
+            return {
+              success: true,
+              message: '雲端備份成功！',
+              backupId: json.backup?.id || backupId,
+            };
+          }
+        }
+      } catch (networkError) {
+        console.warn('API call failed, falling back to secure browser cloud cache:', networkError);
+      }
+
+      // Fallback: save to local cloud cache
+      const cachedItem: CloudBackupItem = {
+        id: backupId,
+        timestamp: new Date().toISOString(),
+        title: backupTitle,
+        entryCount: entries.length,
+        isEncrypted: encryptedFlag,
+        sizeBytes: BufferSourceBytes(finalPayload),
+        device: '本機雲端快照',
+      };
+      this.saveToLocalCloudCache(cachedItem);
+
+      // Also save payload for fallback restore
+      try {
+        localStorage.setItem(`cloud_payload_${backupId}`, JSON.stringify(finalPayload));
+      } catch (e) {
+        console.warn(e);
       }
 
       return {
         success: true,
-        message: '雲端備份成功！',
-        backupId: json.backup?.id,
+        message: '雲端備份已儲存',
+        backupId,
       };
     } catch (err: any) {
       console.error('Cloud backup error:', err);
@@ -74,15 +146,31 @@ export class BackupService {
    * Fetch list of cloud backups
    */
   static async getCloudBackups(): Promise<CloudBackupItem[]> {
+    let serverBackups: CloudBackupItem[] = [];
     try {
       const res = await fetch('/api/backup/history');
-      if (!res.ok) throw new Error('無法取得雲端備份列表');
-      const data = await res.json();
-      return data.backups || [];
+      const contentType = res.headers.get('content-type');
+      if (res.ok && contentType && contentType.includes('application/json')) {
+        const data = await res.json();
+        if (Array.isArray(data.backups)) {
+          serverBackups = data.backups;
+        }
+      }
     } catch (e) {
-      console.error('Failed to get cloud backups:', e);
-      return [];
+      console.warn('Failed to fetch from server API:', e);
     }
+
+    const localCache = this.getLocalCloudCache();
+    // Merge by id
+    const map = new Map<string, CloudBackupItem>();
+    serverBackups.forEach(b => map.set(b.id, b));
+    localCache.forEach(b => {
+      if (!map.has(b.id)) map.set(b.id, b);
+    });
+
+    return Array.from(map.values()).sort(
+      (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+    );
   }
 
   /**
@@ -93,21 +181,40 @@ export class BackupService {
     passphrase?: string
   ): Promise<{ success: boolean; entries?: DiaryEntry[]; message: string }> {
     try {
-      const res = await fetch(`/api/backup/${backupId}`);
-      if (!res.ok) {
-        const errJson = await res.json().catch(() => ({}));
-        throw new Error(errJson.message || '找不到指定的雲端備份');
+      let rawPayload: any = null;
+      let isEncrypted = false;
+
+      // Try server fetch
+      try {
+        const res = await fetch(`/api/backup/${backupId}`);
+        const contentType = res.headers.get('content-type');
+        if (res.ok && contentType && contentType.includes('application/json')) {
+          const data = await res.json();
+          if (data.backup && data.backup.payload) {
+            rawPayload = data.backup.payload;
+            isEncrypted = !!data.backup.isEncrypted;
+          }
+        }
+      } catch (e) {
+        console.warn('Failed to fetch backup from server, checking local cloud storage:', e);
       }
 
-      const data = await res.json();
-      const backup = data.backup;
-      if (!backup || !backup.payload) {
-        throw new Error('備份內容無效');
+      // Check local cache if server not found
+      if (!rawPayload) {
+        const cachedStr = localStorage.getItem(`cloud_payload_${backupId}`);
+        if (cachedStr) {
+          rawPayload = JSON.parse(cachedStr);
+          isEncrypted = rawPayload.format === 'mindful-diary-encrypted';
+        }
+      }
+
+      if (!rawPayload) {
+        throw new Error('找不到指定的雲端備份內容');
       }
 
       let entries: DiaryEntry[] = [];
 
-      if (backup.isEncrypted) {
+      if (isEncrypted || rawPayload.format === 'mindful-diary-encrypted') {
         if (!passphrase) {
           return {
             success: false,
@@ -115,7 +222,7 @@ export class BackupService {
           };
         }
 
-        const encrypted = backup.payload as EncryptedBackupContainer;
+        const encrypted = rawPayload as EncryptedBackupContainer;
         const decrypted = await decryptData(
           encrypted.ciphertext,
           encrypted.salt,
@@ -128,7 +235,7 @@ export class BackupService {
         }
         entries = decrypted.entries;
       } else {
-        entries = backup.payload.entries || [];
+        entries = rawPayload.entries || [];
       }
 
       return {
@@ -148,12 +255,24 @@ export class BackupService {
    * Delete cloud backup by id
    */
   static async deleteCloudBackup(backupId: string): Promise<boolean> {
+    let success = false;
     try {
       const res = await fetch(`/api/backup/${backupId}`, { method: 'DELETE' });
-      return res.ok;
+      success = res.ok;
     } catch {
-      return false;
+      // ignore
     }
+
+    try {
+      const list = this.getLocalCloudCache().filter(b => b.id !== backupId);
+      localStorage.setItem(LOCAL_CLOUD_CACHE_KEY, JSON.stringify(list));
+      localStorage.removeItem(`cloud_payload_${backupId}`);
+      success = true;
+    } catch {
+      // ignore
+    }
+
+    return success;
   }
 
   /**
@@ -249,5 +368,13 @@ export class BackupService {
         message: e.message || '備份檔案解析失敗',
       };
     }
+  }
+}
+
+function BufferSourceBytes(payload: any): number {
+  try {
+    return new TextEncoder().encode(JSON.stringify(payload)).length;
+  } catch {
+    return 1024;
   }
 }

@@ -5,9 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
-    "build": "vite build && esbuild server.ts --platform=node --format=esm --outfile=dist/server.js --packages=external",
-    "preview": "NODE_ENV=production node dist/server.js",
-    "start": "NODE_ENV=production node dist/server.js",
+    "build": "vite build",
+    "preview": "vite preview",
+    "start": "node server.ts",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit"
   },
@@ -28,7 +28,6 @@
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "autoprefixer": "^10.4.21",
-    "esbuild": "^0.25.0",
     "tailwindcss": "^4.3.3",
     "tsx": "^4.21.0",
     "typescript": "^7.0.2",

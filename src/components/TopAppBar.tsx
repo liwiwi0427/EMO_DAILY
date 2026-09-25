@@ -24,10 +24,15 @@ export const TopAppBar: React.FC<TopAppBarProps> = ({ onOpenPasscodeModal }) => 
   return (
     <header className="sticky top-0 z-30 w-full bg-surface/90 dark:bg-surface-dim/90 backdrop-blur-md border-b border-outline-variant/30 px-4 sm:px-6 py-3 transition-colors">
       <div className="max-w-6xl mx-auto flex items-center justify-between gap-3">
-        {/* Zone 1: Brand Wordmark (Clean single-element) */}
+        {/* Zone 1: Brand Wordmark (Clean single-element with brand icon) */}
         <div className="flex items-center gap-2.5 shrink-0">
-          <div className="w-8 h-8 rounded-xl bg-primary text-on-primary flex items-center justify-center font-bold text-sm shadow-sm">
-            心
+          <div className="w-8 h-8 rounded-xl overflow-hidden shadow-sm border border-outline-variant/40 shrink-0">
+            <img
+              src="/src/assets/images/app_icon_mindful_1790371108480.jpg"
+              alt="心語日誌 App Icon"
+              referrerPolicy="no-referrer"
+              className="w-full h-full object-cover"
+            />
           </div>
           <span className="text-base sm:text-lg font-bold tracking-tight text-on-surface whitespace-nowrap">
             心語日誌

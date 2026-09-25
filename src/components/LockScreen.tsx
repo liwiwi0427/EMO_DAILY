@@ -89,9 +89,19 @@ export const LockScreen: React.FC = () => {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-surface/95 dark:bg-surface-dim/95 backdrop-blur-2xl transition-all">
       <div className="w-full max-w-sm flex flex-col items-center">
-        {/* Lock Icon & Title */}
-        <div className="w-16 h-16 rounded-3xl bg-primary-container text-on-primary-container flex items-center justify-center shadow-lg shadow-primary/10 mb-4 transition-transform hover:scale-105">
-          <Lock className="w-8 h-8" />
+        {/* App Icon & Lock Badge */}
+        <div className="relative mb-4 transition-transform hover:scale-105">
+          <div className="w-20 h-20 rounded-3xl overflow-hidden shadow-xl shadow-primary/20 border-2 border-outline-variant/40">
+            <img
+              src="/src/assets/images/app_icon_mindful_1790371108480.jpg"
+              alt="心語日誌 App Icon"
+              referrerPolicy="no-referrer"
+              className="w-full h-full object-cover"
+            />
+          </div>
+          <div className="absolute -bottom-1 -right-1 w-7 h-7 rounded-full bg-primary text-on-primary flex items-center justify-center shadow-md">
+            <Lock className="w-3.5 h-3.5" />
+          </div>
         </div>
 
         <h1 className="text-xl font-bold tracking-tight text-on-surface mb-1">

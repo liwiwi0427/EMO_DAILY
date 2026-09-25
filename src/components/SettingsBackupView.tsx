@@ -427,6 +427,29 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({ onOpenPa
         </div>
       </section>
 
+      {/* Section 5: About App & Brand Icon */}
+      <section className="rounded-3xl bg-surface-container border border-outline-variant/30 p-5 sm:p-6 flex flex-col sm:flex-row items-center gap-5">
+        <div className="w-16 h-16 rounded-2xl overflow-hidden shadow-md border border-outline-variant/40 shrink-0">
+          <img
+            src="/src/assets/images/app_icon_mindful_1790371108480.jpg"
+            alt="心語日誌 App Icon"
+            referrerPolicy="no-referrer"
+            className="w-full h-full object-cover"
+          />
+        </div>
+        <div className="text-center sm:text-left flex-1">
+          <div className="flex items-center justify-center sm:justify-start gap-2 mb-1">
+            <h4 className="text-base font-bold text-on-surface">心語日誌 Mindful Journal</h4>
+            <span className="text-[10px] px-2 py-0.5 rounded-full bg-primary-container text-on-primary-container font-semibold">
+              v1.2.0
+            </span>
+          </div>
+          <p className="text-xs text-on-surface-variant leading-relaxed">
+            專為守護個人內心私密與日常微光打造的心情日記。融合 Material Design 3 設計哲學、端對端隱私安全鎖與雲端同步技術。
+          </p>
+        </div>
+      </section>
+
       {/* Restore Confirmation Dialog Modal */}
       {restoreModalBackup && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in">

@@ -1,0 +1,6 @@
+{
+  "name": "心語日誌 Mindful Journal",
+  "description": "符合 Material Design 3 設計風格的心情日記應用程式，支援密碼隱私防護、端對端加密雲端備份與深色模式。",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

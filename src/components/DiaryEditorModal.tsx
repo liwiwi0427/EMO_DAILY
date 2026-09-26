@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { X, Sparkles, Image, Star, Calendar, Clock, Tag, Trash2, Check, Smile } from 'lucide-react';
+import { X, Sparkles, Image, Star, Calendar, Clock, Tag, Trash2, Check, Smile, ShieldCheck, RotateCcw } from 'lucide-react';
 import { DiaryEntry, MoodType, WeatherType } from '../types/diary';
 import { MOODS, WEATHERS, DEFAULT_TAGS, REFLECTION_PROMPTS } from '../utils/constants';
 import { useDiary } from '../context/DiaryContext';
+import { compressImage, saveDraft, loadDraft, clearDraft } from '../utils/storage';
 
 export const DiaryEditorModal: React.FC = () => {
-  const { isEditorOpen, editingEntry, closeEditor, addEntry, updateEntry } = useDiary();
+  const { isEditorOpen, editingEntry, closeEditor, addEntry, updateEntry, showToast } = useDiary();
 
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
@@ -18,26 +19,65 @@ export const DiaryEditorModal: React.FC = () => {
   const [images, setImages] = useState<string[]>([]);
   const [isFavorite, setIsFavorite] = useState(false);
   const [showPromptPicker, setShowPromptPicker] = useState(false);
+  const [hasDraftRestored, setHasDraftRestored] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Sync state when editingEntry changes
+  // Sync state when editingEntry changes or restore draft
   useEffect(() => {
     if (editingEntry) {
-      setTitle(editingEntry.title || '');
-      setContent(editingEntry.content || '');
-      setDate(editingEntry.date || new Date().toISOString().split('T')[0]);
-      setTime(
-        editingEntry.time ||
-          new Date().toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', hour12: false })
-      );
-      setMood(editingEntry.mood || 'happy');
-      setWeather(editingEntry.weather || 'sunny');
-      setTags(editingEntry.tags || []);
-      setImages(editingEntry.images || []);
-      setIsFavorite(!!editingEntry.isFavorite);
+      const savedDraft = loadDraft();
+      // If there is an unsaved draft matching this entry or an unsaved new entry
+      if (
+        savedDraft &&
+        ((editingEntry.id && savedDraft.entryId === editingEntry.id) ||
+          (!editingEntry.id && !savedDraft.entryId && (savedDraft.title || savedDraft.content)))
+      ) {
+        setTitle(savedDraft.title);
+        setContent(savedDraft.content);
+        setDate(savedDraft.date || editingEntry.date || new Date().toISOString().split('T')[0]);
+        setTime(savedDraft.time || editingEntry.time || new Date().toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', hour12: false }));
+        setMood((savedDraft.mood as MoodType) || editingEntry.mood || 'happy');
+        setWeather((savedDraft.weather as WeatherType) || editingEntry.weather || 'sunny');
+        setTags(savedDraft.tags || editingEntry.tags || []);
+        setImages(savedDraft.images || editingEntry.images || []);
+        setIsFavorite(!!savedDraft.isFavorite);
+        setHasDraftRestored(true);
+      } else {
+        setTitle(editingEntry.title || '');
+        setContent(editingEntry.content || '');
+        setDate(editingEntry.date || new Date().toISOString().split('T')[0]);
+        setTime(
+          editingEntry.time ||
+            new Date().toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', hour12: false })
+        );
+        setMood(editingEntry.mood || 'happy');
+        setWeather(editingEntry.weather || 'sunny');
+        setTags(editingEntry.tags || []);
+        setImages(editingEntry.images || []);
+        setIsFavorite(!!editingEntry.isFavorite);
+        setHasDraftRestored(false);
+      }
     }
   }, [editingEntry]);
+
+  // Real-time draft auto-save while typing
+  useEffect(() => {
+    if (isEditorOpen && (title.trim() || content.trim())) {
+      saveDraft({
+        entryId: editingEntry?.id,
+        title,
+        content,
+        date,
+        time,
+        mood,
+        weather,
+        tags,
+        images,
+        isFavorite,
+      });
+    }
+  }, [isEditorOpen, title, content, date, time, mood, weather, tags, images, isFavorite, editingEntry]);
 
   if (!isEditorOpen) return null;
 
@@ -67,6 +107,13 @@ export const DiaryEditorModal: React.FC = () => {
       addEntry(payload);
     }
 
+    clearDraft();
+    closeEditor();
+  };
+
+  const handleClose = () => {
+    // If user has unsaved changes, clear draft or dismiss
+    clearDraft();
     closeEditor();
   };
 
@@ -82,23 +129,18 @@ export const DiaryEditorModal: React.FC = () => {
     setTags(tags.filter(t => t !== tagToRemove));
   };
 
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
 
-    Array.from(files).forEach(file => {
-      if (file.size > 5 * 1024 * 1024) {
-        alert('照片檔案大小請小於 5MB');
-        return;
+    for (const file of Array.from(files)) {
+      try {
+        const compressed = await compressImage(file, 1200, 0.75);
+        setImages(prev => [...prev, compressed]);
+      } catch (err) {
+        console.warn('Image processing error:', err);
       }
-      const reader = new FileReader();
-      reader.onload = evt => {
-        if (evt.target?.result) {
-          setImages(prev => [...prev, evt.target!.result as string]);
-        }
-      };
-      reader.readAsDataURL(file);
-    });
+    }
 
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
@@ -116,19 +158,33 @@ export const DiaryEditorModal: React.FC = () => {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-black/60 backdrop-blur-sm overflow-y-auto">
-      <div className="w-full max-w-2xl my-auto rounded-3xl bg-surface-container-high border border-outline-variant/40 shadow-2xl flex flex-col max-h-[92vh] overflow-hidden">
+      <div className="w-full max-w-2xl my-auto rounded-3xl bg-surface-container-high border border-outline-variant/40 shadow-2xl flex flex-col max-h-[92vh] overflow-hidden animate-fade-in">
         {/* Top Header */}
-        <div className="px-5 py-4 border-b border-outline-variant/30 flex items-center justify-between gap-3 shrink-0">
-          <div className="flex items-center gap-2">
+        <div className="px-5 py-3.5 border-b border-outline-variant/30 flex items-center justify-between gap-3 shrink-0">
+          <div className="flex items-center gap-2.5">
             <span className="text-xl">{currentMoodMeta.emoji}</span>
             <div>
-              <h2 className="text-base font-bold text-on-surface">
-                {isEditingExisting ? '編輯心情日記' : '撰寫今日心情日誌'}
-              </h2>
+              <div className="flex items-center gap-2">
+                <h2 className="text-base font-bold text-on-surface">
+                  {isEditingExisting ? '編輯心情日記' : '撰寫今日心情日誌'}
+                </h2>
+                <span className="hidden sm:inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+                  <ShieldCheck className="w-3 h-3" />
+                  即時自動保護中
+                </span>
+              </div>
               <div className="flex items-center gap-2 text-xs text-on-surface-variant">
                 <span>{wordCount} 字</span>
                 <span>·</span>
                 <span>約 {readTimeMinutes} 分鐘閱讀</span>
+                {hasDraftRestored && (
+                  <>
+                    <span>·</span>
+                    <span className="text-amber-500 flex items-center gap-0.5">
+                      <RotateCcw className="w-3 h-3" /> 已自動還原先前草稿
+                    </span>
+                  </>
+                )}
               </div>
             </div>
           </div>
@@ -146,7 +202,7 @@ export const DiaryEditorModal: React.FC = () => {
               <Star className={`w-4 h-4 ${isFavorite ? 'fill-amber-500' : ''}`} />
             </button>
             <button
-              onClick={closeEditor}
+              onClick={handleClose}
               className="w-9 h-9 rounded-full flex items-center justify-center text-on-surface-variant hover:bg-surface-container transition-colors"
             >
               <X className="w-5 h-5" />
@@ -158,7 +214,7 @@ export const DiaryEditorModal: React.FC = () => {
         <div className="px-5 py-4 overflow-y-auto space-y-4 flex-1">
           {/* Mood Selector - Material 3 segmented pill selector */}
           <div>
-            <label className="text-xs font-semibold text-on-surface mb-2 block flex items-center gap-1">
+            <label className="text-xs font-semibold text-on-surface mb-2 flex items-center gap-1">
               <Smile className="w-3.5 h-3.5 text-primary" />
               <span>今日心情狀態</span>
             </label>
@@ -333,7 +389,7 @@ export const DiaryEditorModal: React.FC = () => {
 
           {/* Tags */}
           <div>
-            <label className="text-xs font-semibold text-on-surface mb-2 block flex items-center gap-1.5">
+            <label className="text-xs font-semibold text-on-surface mb-2 flex items-center gap-1.5">
               <Tag className="w-3.5 h-3.5 text-primary" />
               <span>分類標籤</span>
             </label>
@@ -392,22 +448,29 @@ export const DiaryEditorModal: React.FC = () => {
         </div>
 
         {/* Footer Actions */}
-        <div className="px-5 py-3.5 border-t border-outline-variant/30 bg-surface-container/50 flex items-center justify-end gap-3 shrink-0">
-          <button
-            type="button"
-            onClick={closeEditor}
-            className="px-5 py-2 rounded-full text-xs font-medium text-on-surface-variant hover:text-on-surface hover:bg-surface-container transition-colors"
-          >
-            取消
-          </button>
-          <button
-            type="button"
-            onClick={handleSave}
-            className="px-6 py-2 rounded-full bg-primary text-on-primary text-xs sm:text-sm font-semibold flex items-center gap-1.5 shadow-sm hover:opacity-90 active:scale-95 transition-all"
-          >
-            <Check className="w-4 h-4" />
-            <span>{isEditingExisting ? '儲存更新' : '儲存日記'}</span>
-          </button>
+        <div className="px-5 py-3.5 border-t border-outline-variant/30 bg-surface-container/50 flex items-center justify-between gap-3 shrink-0">
+          <div className="text-[11px] text-on-surface-variant hidden sm:flex items-center gap-1">
+            <ShieldCheck className="w-3.5 h-3.5 text-emerald-500" />
+            <span>儲存時將自動同步寫入本機硬碟與資料庫</span>
+          </div>
+
+          <div className="flex items-center gap-2 ml-auto">
+            <button
+              type="button"
+              onClick={handleClose}
+              className="px-4 py-2 rounded-full text-xs font-medium text-on-surface-variant hover:text-on-surface hover:bg-surface-container transition-colors"
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              onClick={handleSave}
+              className="px-6 py-2 rounded-full bg-primary text-on-primary text-xs sm:text-sm font-semibold flex items-center gap-1.5 shadow-sm hover:opacity-90 active:scale-95 transition-all"
+            >
+              <Check className="w-4 h-4" />
+              <span>{isEditingExisting ? '儲存更新' : '儲存日記'}</span>
+            </button>
+          </div>
         </div>
       </div>
     </div>

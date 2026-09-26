@@ -3,6 +3,13 @@ import { DiaryEntry, MoodType, SecuritySettings } from '../types/diary';
 import { INITIAL_SAMPLE_ENTRIES } from '../utils/constants';
 import { hashPasscode, generateSalt, verifyPasscode } from '../utils/crypto';
 import { BackupService } from '../services/backupService';
+import {
+  saveEntriesToLocalStorage,
+  loadEntriesFromLocalStorage,
+  saveEntriesToIndexedDB,
+  loadEntriesFromIndexedDB,
+  clearDraft,
+} from '../utils/storage';
 
 interface ToastState {
   show: boolean;
@@ -65,7 +72,6 @@ interface DiaryContextValue {
 }
 
 const STORAGE_KEYS = {
-  ENTRIES: 'mindful_journal_entries_v1',
   SECURITY: 'mindful_journal_security_v1',
   THEME: 'mindful_journal_theme_v1',
   AUTO_SYNC: 'mindful_journal_auto_sync_v1',
@@ -112,27 +118,71 @@ export const DiaryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   // Locked state
   const [isLocked, setIsLocked] = useState<boolean>(() => {
-    // If passcode is enabled, initially locked
     return securitySettings.isPasscodeEnabled;
   });
 
-  // Entries State
+  // Entries State: Synchronous immediate initialization from LocalStorage
   const [entries, setEntries] = useState<DiaryEntry[]>(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEYS.ENTRIES);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-      }
-    } catch (e) {
-      console.error(e);
-    }
-    return INITIAL_SAMPLE_ENTRIES;
+    const { entries: initialEntries } = loadEntriesFromLocalStorage();
+    return initialEntries;
   });
 
-  // Persist entries
+  // Secondary hydration from IndexedDB and server-side /api/entries
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.ENTRIES, JSON.stringify(entries));
+    let isMounted = true;
+
+    // 1. Check IndexedDB for complete offline persistent database
+    loadEntriesFromIndexedDB().then(idbEntries => {
+      if (isMounted && idbEntries && idbEntries.length > 0) {
+        setEntries(prev => {
+          // If indexedDB has data, prioritize it
+          return idbEntries;
+        });
+        saveEntriesToLocalStorage(idbEntries);
+      }
+    });
+
+    // 2. Fetch server-side saved entries if available
+    fetch('/api/entries')
+      .then(res => res.json())
+      .then(data => {
+        if (isMounted && data.success && Array.isArray(data.entries) && data.entries.length > 0) {
+          setEntries(data.entries);
+          saveEntriesToLocalStorage(data.entries);
+          saveEntriesToIndexedDB(data.entries);
+        }
+      })
+      .catch(() => {
+        // Server might be static or offline, client storage remains fully authoritative
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  // Multi-tier persistence helper: immediately saves to LocalStorage, IndexedDB, and server
+  const persistEntries = useCallback((newEntries: DiaryEntry[]) => {
+    // 1. Synchronously save to LocalStorage (0ms latency, survives page refresh immediately)
+    saveEntriesToLocalStorage(newEntries);
+
+    // 2. Asynchronously save to IndexedDB (virtually unlimited quota for photos/long entries)
+    saveEntriesToIndexedDB(newEntries);
+
+    // 3. Asynchronously sync to Server API
+    fetch('/api/entries', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ entries: newEntries }),
+    }).catch(() => {
+      // Offline or static fallback
+    });
+  }, []);
+
+  // Safety watcher for entries
+  useEffect(() => {
+    saveEntriesToLocalStorage(entries);
+    saveEntriesToIndexedDB(entries);
   }, [entries]);
 
   // Persist security
@@ -230,7 +280,7 @@ export const DiaryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
   }, [entries, showToast]);
 
-  // CRUD actions
+  // CRUD actions with immediate synchronous persistence
   const addEntry = useCallback((entryData: Omit<DiaryEntry, 'id' | 'createdAt' | 'updatedAt'>) => {
     const newEntry: DiaryEntry = {
       ...entryData,
@@ -239,7 +289,13 @@ export const DiaryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       updatedAt: new Date().toISOString(),
     };
 
-    setEntries(prev => [newEntry, ...prev]);
+    setEntries(prev => {
+      const updated = [newEntry, ...prev];
+      persistEntries(updated);
+      return updated;
+    });
+
+    clearDraft();
     showToast('日記已成功保存', 'success');
 
     if (autoCloudSync) {
@@ -255,7 +311,7 @@ export const DiaryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         });
       }, 800);
     }
-  }, [entries, autoCloudSync, showToast]);
+  }, [entries, autoCloudSync, persistEntries, showToast]);
 
   const updateEntry = useCallback((id: string, updates: Partial<DiaryEntry>) => {
     setEntries(prev => {
@@ -264,36 +320,51 @@ export const DiaryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           ? { ...item, ...updates, updatedAt: new Date().toISOString() }
           : item
       );
-      if (autoCloudSync) {
-        setTimeout(() => {
-          BackupService.uploadToCloud(updated);
-        }, 1000);
-      }
+      // Synchronously and permanently save!
+      persistEntries(updated);
       return updated;
     });
-    showToast('日記已更新', 'success');
-  }, [autoCloudSync, showToast]);
+
+    clearDraft();
+    showToast('日記已更新並儲存', 'success');
+
+    if (autoCloudSync) {
+      setTimeout(() => {
+        setEntries(current => {
+          BackupService.uploadToCloud(current);
+          return current;
+        });
+      }, 1000);
+    }
+  }, [autoCloudSync, persistEntries, showToast]);
 
   const deleteEntry = useCallback((id: string) => {
     setEntries(prev => {
       const filtered = prev.filter(item => item.id !== id);
-      if (autoCloudSync) {
-        setTimeout(() => {
-          BackupService.uploadToCloud(filtered);
-        }, 1000);
-      }
+      persistEntries(filtered);
       return filtered;
     });
     showToast('日記已刪除', 'info');
-  }, [autoCloudSync, showToast]);
+
+    if (autoCloudSync) {
+      setTimeout(() => {
+        setEntries(current => {
+          BackupService.uploadToCloud(current);
+          return current;
+        });
+      }, 1000);
+    }
+  }, [autoCloudSync, persistEntries, showToast]);
 
   const toggleFavorite = useCallback((id: string) => {
-    setEntries(prev =>
-      prev.map(item =>
+    setEntries(prev => {
+      const updated = prev.map(item =>
         item.id === id ? { ...item, isFavorite: !item.isFavorite } : item
-      )
-    );
-  }, []);
+      );
+      persistEntries(updated);
+      return updated;
+    });
+  }, [persistEntries]);
 
   const restoreEntries = useCallback((newEntries: DiaryEntry[], merge = false) => {
     if (merge) {
@@ -301,16 +372,19 @@ export const DiaryProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         const map = new Map<string, DiaryEntry>();
         prev.forEach(e => map.set(e.id, e));
         newEntries.forEach(e => map.set(e.id, e));
-        return Array.from(map.values()).sort(
+        const merged = Array.from(map.values()).sort(
           (a, b) => new Date(b.date + ' ' + b.time).getTime() - new Date(a.date + ' ' + a.time).getTime()
         );
+        persistEntries(merged);
+        return merged;
       });
       showToast(`已合併 ${newEntries.length} 篇日記`, 'success');
     } else {
       setEntries(newEntries);
+      persistEntries(newEntries);
       showToast(`已成功還原 ${newEntries.length} 篇日記`, 'success');
     }
-  }, [showToast]);
+  }, [persistEntries, showToast]);
 
   // Security methods
   const lockApp = useCallback(() => {

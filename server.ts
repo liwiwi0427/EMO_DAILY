@@ -21,6 +21,7 @@ try {
 }
 
 const BACKUPS_FILE = path.join(DATA_DIR, 'cloud_backups.json');
+const ENTRIES_FILE = path.join(DATA_DIR, 'entries.json');
 
 interface BackupRecord {
   id: string;
@@ -35,6 +36,31 @@ interface BackupRecord {
 
 // In-memory fallback if disk is not writable
 let inMemoryBackups: BackupRecord[] = [];
+let inMemoryEntries: any[] | null = null;
+
+function readEntries(): any[] | null {
+  try {
+    if (fs.existsSync(ENTRIES_FILE)) {
+      const content = fs.readFileSync(ENTRIES_FILE, 'utf-8');
+      return JSON.parse(content);
+    }
+  } catch (e) {
+    console.error('Error reading entries file:', e);
+  }
+  return inMemoryEntries;
+}
+
+function writeEntries(data: any[]) {
+  inMemoryEntries = data;
+  try {
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+    fs.writeFileSync(ENTRIES_FILE, JSON.stringify(data, null, 2), 'utf-8');
+  } catch (e) {
+    console.error('Error writing entries file to disk:', e);
+  }
+}
 
 function readBackups(): BackupRecord[] {
   try {
@@ -156,6 +182,29 @@ app.delete('/api/backup/:id', (req, res) => {
   }
   writeBackups(backups);
   res.json({ success: true, message: '已成功移除此雲端備份' });
+});
+
+// Entries Direct Sync API
+app.get('/api/entries', (req, res) => {
+  const entries = readEntries();
+  res.json({
+    success: true,
+    entries: entries || null,
+  });
+});
+
+app.post('/api/entries', (req, res) => {
+  const { entries } = req.body;
+  if (!Array.isArray(entries)) {
+    return res.status(400).json({ success: false, message: '日記資料必須為陣列' });
+  }
+  writeEntries(entries);
+  res.json({
+    success: true,
+    message: '日記資料已成功同步儲存至伺服端',
+    count: entries.length,
+    timestamp: new Date().toISOString(),
+  });
 });
 
 // Start dev Vite or static serving when running as a stand-alone server
